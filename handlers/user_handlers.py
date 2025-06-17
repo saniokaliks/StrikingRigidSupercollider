@@ -105,15 +105,23 @@ async def handle_main_options(message: Message, state: FSMContext, bot: Bot):
         )
 
     elif message.text == "📤 Зняття":
-        last = user.get("last_withdrawal")
-        if last:
-            last_time = datetime.fromisoformat(last)
+        pending = user.get("pending_withdrawal")
+        if pending:
+            last_time = datetime.fromisoformat(pending["requested_at"])
             if datetime.now() - last_time < timedelta(days=1):
-                await message.answer("❗ Ви вже робили зняття сьогодні. Спробуйте завтра.")
+                await message.answer("❗ Ви вже зробили запит на зняття сьогодні. Очікуйте підтвердження.")
                 return
+        else:
+            last_time_str = user.get("last_withdrawal_time")
+            if last_time_str:
+                last_time = datetime.fromisoformat(last_time_str)
+                if datetime.now() - last_time < timedelta(days=1):
+                    await message.answer("❗ Ви вже робили зняття сьогодні. Спробуйте завтра.")
+                    return
 
         await message.answer("✏️ Введіть суму для зняття (від 3000 до 15000):")
         await state.set_state(WithdrawState.waiting_for_amount)
+
 
 # Обробка введеної суми на зняття
 @router.message(WithdrawState.waiting_for_amount, F.text)
@@ -125,22 +133,29 @@ async def process_withdraw_amount(message: Message, state: FSMContext, bot: Bot)
 
     if not text.isdigit():
         await message.answer("❗ Введіть коректне число (від 3000 до 15000).")
+        await state.clear()
         return
 
     amount = int(text)
 
     if amount < 3000 or amount > 15000:
         await message.answer("❗ Сума повинна бути в межах від 3000 до 15000.")
+        await state.clear()
         return
 
     if user["normal"] < amount:
         await message.answer("❌ Недостатньо звичайних монет для зняття.")
+        await state.clear()
         return
 
     # 💰 ВІДНІМАЄМО МОНЕТИ ЗІ ЗВИЧАЙНОГО БАЛАНСУ
-    user["normal"] -= amount
-    user["last_withdrawal"] = amount
+    # Зберігаємо запит на зняття, але не знімаємо монети
+    user["pending_withdrawal"] = {
+        "amount": amount,
+        "requested_at": datetime.now().isoformat()
+    }
     save_users(users)
+
 
     uah = amount / 3
     await message.answer(
@@ -199,21 +214,23 @@ class ShopState(StatesGroup):
     choosing_wallet = State()
     entering_book_title = State()
 SERVICES = {
-    1: ("Вивести в рекомендації [3 години]", 45),
-    2: ("Вивести в рекомендації [12 годин]", 200),
-    3: ("Вивести в рекомендації [24 години]", 350),
-    4: ("Реклама на головній [3 години]", 250),
-    5: ("Реклама на головній [12 годин]", 1000),
-    6: ("Реклама на головній [24 години]", 2000),
-    7: ("Реклама в каталозі [24 години]", 350),
-    8: ("Реклама за жанрами [24 години]", 150),
-    9: ("Реклама за тегами [24 години]", 100),
-    10: ("Реклама за фeндомами [24 години]", 150),
-    11: ("Всі види реклами на 24 години", 2800),
+    1: ("В рекомендації [3 години]", 55),
+    2: ("В рекомендації [12 годин]", 200),
+    3: ("В рекомендації [24 години]", 350),
+    4: ("На головній [3 години]", 250),
+    5: ("На головній [12 годин]", 1000),
+    6: ("На головній [24 години]", 2000),
+    7: ("В каталозі [24 години]", 350),
+    8: ("За жанрами [24 години]", 150),
+    9: ("За тегами [24 години]", 100),
+    10: ("За фeндомами [24 години]", 150),
+    11: ("Вся реклама на [24 години]", 2800),
     12: ("В соцмережах [24 години]", 2000),
     13: ("Озвучка книги [1 розділ]", 300),
     14: ("Генерація заставки [1 фото]", 300),
     15: ("Редагування [1 розділ]", 200),
+    16: ("Випуск [1 розділ]", 300),
+    17: ("Випуск [5 розділ]", 1000),
 }
 @router.message(F.text == "🛍 Магазин")
 async def open_shop(message: Message, state: FSMContext):
@@ -324,6 +341,9 @@ async def open_auction(message: Message):
     ])
     await message.answer("📘 Оберіть книгу для перегляду аукціону:", reply_markup=kb)
 
+from datetime import datetime
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
 @router.callback_query(F.data.startswith("auction:"))
 async def view_auction(callback: CallbackQuery):
     book_id = callback.data.split(":")[1]
@@ -332,19 +352,34 @@ async def view_auction(callback: CallbackQuery):
     bid = data['highest_bid']
     user = data['highest_user']
 
+    # ⏳ Обрахунок часу
+    remaining = "—"
+    end_time_str = data.get("end_time")
+    if end_time_str:
+        end_time = datetime.fromisoformat(end_time_str)
+        delta = end_time - datetime.now()
+
+        if delta.total_seconds() > 0:
+            minutes = delta.seconds // 60
+            seconds = delta.seconds % 60
+            remaining = f"{minutes} хв {seconds} сек"
+        else:
+            remaining = "Завершено"
+
     text = (
         f"📖 Книга: {book_id}\n"
         f"📄 Опис: {desc}\n"
         f"💰 Найвища ставка: {bid if bid > 0 else '—'}\n"
-        f"🔻 Мінімальна ставка: {data['min_bid']}"
+        f"🔻 Мінімальна ставка: {data['min_bid']}\n"
+        f"⏳ Час до завершення: {remaining}"
     )
 
     btn = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💸 Зробити ставку", callback_data=f"bid:{book_id}")]
-        ])
+        [InlineKeyboardButton(text="💸 Зробити ставку", callback_data=f"bid:{book_id}")]
+    ])
 
-    
     await callback.message.edit_text(text, reply_markup=btn)
+
 class BidState(StatesGroup):
     choosing_balance = State()
     entering_amount = State()

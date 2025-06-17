@@ -1,11 +1,16 @@
 from aiogram import Router, types, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
-from data.auction_data import auction, save_auction
-from database import load_users, save_users
+
+from datetime import datetime, timedelta
+
 from config import ADMINS
+from data.auction_data import auction, save_auction
 from handlers.data.utils.storage import users
-from datetime import datetime
+
+from database import load_users, save_users
+
+
 router = Router()
 
 def is_admin(user_id: int | str) -> bool:
@@ -15,89 +20,123 @@ def is_admin(user_id: int | str) -> bool:
 
 @router.callback_query(F.data.startswith("accept:"))
 async def accept_withdrawal(callback: CallbackQuery):
-            parts = callback.data.split(":")
-            user_id, amount = parts[1], int(parts[2])
-            user = users.get(user_id)
+    parts = callback.data.split(":")
+    user_id, amount = parts[1], int(parts[2])
+    user = users.get(user_id)
 
-            if not user:
-                await callback.message.answer("❌ Користувача не знайдено.")
-                return
+    if not user:
+        await callback.message.answer("❌ Користувача не знайдено.")
+        return
 
-            # 🔐 Перевірка на дубль
-            if user.get("last_withdrawal") != amount:
-                await callback.message.answer("⚠️ Цю заявку вже оброблено.")
-                return
+    # 🔐 Перевірка на дубль
+    pending = user.get("pending_withdrawal")
+    if not pending or pending.get("amount") != amount:
+        await callback.message.answer("⚠️ Цю заявку вже оброблено або її не існує.")
+        return
 
-            # Знімаємо заявку
-            user["last_withdrawal"] = None
-            now = datetime.now().strftime("%d.%m.%Y")
-            user["history"].append(f"💵 {now} | зняття: {amount} монет")
-            save_users(users)
+    # Знімаємо заявку
+    user["normal"] -= amount
+    user["pending_withdrawal"] = None
+    user["last_withdrawal_time"] = datetime.now().isoformat()
+    now = datetime.now().strftime("%d.%m.%Y")
+    user["history"].append(f"💵 {now} | зняття: {amount} монет")
+    save_users(users)
 
-            await callback.message.edit_text(f"✅ Заявка на вивід {amount} монет для ID {user_id} підтверджена.")
-            try:
-                await callback.bot.send_message(int(user_id), f"✅ Ваш запит на зняття {amount} монет підтверджено модератором.Гроші надійдуть до вас протягом 15 робочих днів — залишається трохи почекати.")
-            except:
-                pass
+    await callback.message.edit_text(f"✅ Заявка на вивід {amount} монет для ID {user_id} підтверджена.")
+    try:
+        await callback.bot.send_message(
+            int(user_id),
+            f"✅ Ваш запит на зняття {amount} монет підтверджено модератором.\n"
+            f"Гроші надійдуть до вас протягом 15 робочих днів — залишається трохи почекати."
+        )
+    except:
+        pass
+
 
 
 @router.callback_query(F.data.startswith("decline:"))
 async def decline_withdrawal(callback: CallbackQuery):
-            parts = callback.data.split(":")
-            user_id, amount = parts[1], int(parts[2])
-            user = users.get(user_id)
+    parts = callback.data.split(":")
+    user_id, amount = parts[1], int(parts[2])
+    user = users.get(user_id)
 
-            if not user:
-                await callback.message.answer("❌ Користувача не знайдено.")
-                return
+    if not user:
+        await callback.message.answer("❌ Користувача не знайдено.")
+        return
 
-            # 🔐 Перевірка на дубль
-            if user.get("last_withdrawal") != amount:
-                await callback.message.answer("⚠️ Цю заявку вже оброблено.")
-                return
+    # 🔐 Перевірка на дубль
+    pending = user.get("pending_withdrawal")
+    if not pending or pending.get("amount") != amount:
+        await callback.message.answer("⚠️ Цю заявку вже оброблено або її не існує.")
+        return
 
-            # Скасовуємо заявку, повертаємо монети
-            user["normal"] += amount
-            user["last_withdrawal"] = None
-            user["history"].append(f"❌ Відхилено зняття: {amount} монет")
-            save_users(users)
+    # Скасовуємо заявку, повертаємо монети
+    user["normal"] += amount
+    user["pending_withdrawal"] = None
+    user["history"].append(f"❌ Відхилено зняття: {amount} монет")
+    save_users(users)
 
-            await callback.message.edit_text(f"❌ Заявка на вивід {amount} монет для ID {user_id} відхилена. Монети повернено.")
-            try:
-                await callback.bot.send_message(
-                    int(user_id),
-                    f"❌ Ваш запит на зняття {amount} монет було відхилено.\n💰 Монети повернуто на баланс."
-                )
-            except:
-                pass
+    await callback.message.edit_text(f"❌ Заявка на вивід {amount} монет для ID {user_id} відхилена. Монети повернено.")
+    try:
+        await callback.bot.send_message(
+            int(user_id),
+            f"❌ Ваш запит на зняття {amount} монет було відхилено.\n💰 Монети повернуто на баланс."
+        )
+    except:
+        pass
+
 
 
 ### --- Адмін-команди --- ###
 
 @router.message(Command("admin"))
 async def admin_panel(message: Message):
+ if not is_admin(message.from_user.id):
+  try:
+   await message.answer("⛔ А ти шалун!.")
+  except:
+   pass
+  return
+
+ await message.answer(
+  "🔧 Панель адміністратора:\n\n"
+  "📋 Список доступних команд:\n"
+  "/give_bonus user_id сума – видати бонусні монети\n"
+  "/give_normal user_id сума – видати звичайні монети\n"
+  "/take_bonus user_id сума – забрати бонусні монети\n"
+  "/take_normal user_id сума – забрати звичайні монети\n"
+  "/user_balance user_id – переглянути баланс\n"
+  "/ban user_id – заблокувати користувача\n"
+  "/unban user_id – розблокувати користувача\n"
+  "/list_banned – список забанених\n"
+  "/add_auction book_id опис – додати аукціон\n"
+  "/remove_auction book_id – видалити аукціон\n"
+  "/create_auction book_id min_bid тривалість_в_хвилинах опис\n"
+  "/finish_auction book_id – завершити аукціон\n"
+  "/users – список користувачі\n"
+  "/send_msg user_id текст – надіслати повідомлення користувачу\n"
+  "/reset_all – очистити всі дані\n"
+ )
+
+@router.message(Command("send_msg"))
+async def send_message_to_user(message: Message):
     if not is_admin(message.from_user.id):
-        await message.answer("⛔ А ти шалун!.")
+        await message.answer("⛔ У вас немає доступу до цієї команди.")
         return
 
-    await message.answer(
-        "🔧 Панель адміністратора:\n\n"
-        "📋 Список доступних команд:\n"
-        "/give_bonus user_id сума – видати бонусні монети\n"
-        "/give_normal user_id сума – видати звичайні монети\n"
-        "/take_bonus user_id сума – забрати бонусні монети\n"
-        "/take_normal user_id сума – забрати звичайні монети\n"
-        "/user_balance user_id – переглянути баланс\n"
-        "/ban user_id – заблокувати користувача\n"
-        "/unban user_id – розблокувати користувача\n"
-        "/list_banned – список забанених\n"
-        "/add_auction book_id опис – додати аукціон\n"
-        "/remove_auction book_id – видалити аукціон\n"
-        "/create_auction book_id мін_ставка опис – створити аукціон\n"
-        "/finish_auction book_id – завершити аукціон\n"
-        "/users – список користувачі\n"
-        "/reset_all – очистити всі дані\n"
-    )
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer("❗ Формат: /send_msg <user_id> <повідомлення>")
+        return
+
+    user_id, text_to_send = parts[1], parts[2]
+
+    try:
+        await message.bot.send_message(int(user_id), f"📩 Повідомлення від адміністратора:\n\n{text_to_send}")
+        await message.answer("✅ Повідомлення успішно надіслано.")
+    except Exception as e:
+        await message.answer(f"❌ Помилка при надсиланні повідомлення:\n{e}")
+
 
 @router.message(Command("give_bonus"))
 async def give_bonus(message: Message):
@@ -209,19 +248,28 @@ async def create_auction(message: Message):
         return
 
     try:
-        _, book_id, min_bid, *desc = message.text.split()
+        _, book_id, min_bid, duration_minutes, *desc = message.text.split()
         description = " ".join(desc)
+
+        from datetime import datetime, timedelta
+        end_time = (datetime.now() + timedelta(minutes=int(duration_minutes))).isoformat()
+
         auction[book_id] = {
             "description": description,
             "highest_bid": 0,
             "highest_user": None,
             "min_bid": int(min_bid),
-            "highest_wallet": None
+            "highest_wallet": None,
+            "end_time": end_time
         }
         save_auction(auction)
-        await message.answer(f"✅ Аукціон '{book_id}' створено з мінімальною ставкою {min_bid}")
-    except:
-        await message.answer("❗ Формат: /create_auction <book_id> <min_bid> <опис>")
+        await message.answer(
+            f"✅ Аукціон '{book_id}' створено\n"
+            f"💰 Мінімальна ставка: {min_bid} монет\n"
+            f"⏳ Завершення через: {duration_minutes} хв"
+        )
+    except Exception as e:
+        await message.answer("❗ Формат: /create_auction <book_id> <min_bid> <duration_хв> <опис>")
 
 @router.message(Command("add_auction"))
 async def add_auction_book(message: Message):
@@ -343,6 +391,7 @@ async def reset_all_data(message: Message):
     auction.clear()
     save_auction(auction)
     await message.answer("♻️ Усі дані очищено. Бот починає з чистого аркуша.")
+    
 @router.message(Command("users"))
 async def show_users(message: Message):
         if not is_admin(message.from_user.id):
@@ -359,3 +408,53 @@ async def show_users(message: Message):
 
         await message.answer(f"👥 Учасники бота:\n\n{users_list}")
 
+import asyncio
+from datetime import datetime
+
+async def check_auction_timer(bot):
+    while True:
+        now = datetime.now()
+        ended = []
+
+        for book_id, data in list(auction.items()):
+            end_time = data.get("end_time")
+            if end_time and datetime.fromisoformat(end_time) <= now:
+                ended.append(book_id)
+
+        for book_id in ended:
+            data = auction.pop(book_id)
+            save_auction(auction)
+
+            bid = data['highest_bid']
+            winner_id = data['highest_user']
+            book_desc = data.get('description', "—")
+
+            if winner_id:
+                nickname = users.get(winner_id, {}).get("nickname", "Невідомий")
+                try:
+                    await bot.send_message(
+                        winner_id,
+                        f"🎉 Ви виграли аукціон на книгу '{book_id}'!\n"
+                        f"📖 Опис: {book_desc}\n"
+                        f"💰 Ставка: {bid} монет"
+                    )
+                except:
+                    pass
+
+                for admin_id in ADMINS:
+                    await bot.send_message(
+                        admin_id,
+                        f"🏁 Аукціон завершено!\n"
+                        f"📚 Книга: {book_id}\n"
+                        f"📄 Опис: {book_desc}\n"
+                        f"👤 Переможець: {nickname} (ID: {winner_id})\n"
+                        f"💰 Ставка: {bid} монет"
+                    )
+            else:
+                for admin_id in ADMINS:
+                    await bot.send_message(
+                        admin_id,
+                        f"⚠️ Аукціон '{book_id}' завершено без переможця."
+                    )
+
+        await asyncio.sleep(30)  # Перевіряє кожні 30 секунд
